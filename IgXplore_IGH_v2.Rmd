@@ -1,0 +1,652 @@
+---
+title: "IgXplore_IGH"
+output: html_document
+date: "2026-05-05"
+---
+```{r, global.options, include=FALSE}
+# Global knitr settings 
+# Set up figures and chunks messages
+ 
+knitr::opts_knit$set(
+  echo = TRUE,
+  root.dir = getwd(),
+  fig.width = 6, fig.height = 5,
+  fig.align = "center",
+  out.width = 768,
+  fig.pos = "H",
+  warning = FALSE,
+  message = FALSE
+)
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 6, fig.height = 5,
+  fig.align = "center",
+  out.width = 768,
+  fig.pos = "H"
+)
+ 
+
+result.dir <- paste0("../results/IgXplore/", Sys.Date(), "/")
+figures.dir <- paste0(result.dir, "Graphs/")
+ 
+# Create result.dir with date if not existent
+ifelse(isFALSE(dir.exists(result.dir)),
+  dir.create(result.dir, recursive = TRUE),
+  "Result directory for today exists already!"
+)
+ 
+# Create figures.dir with date if not existent
+ifelse(isFALSE(dir.exists(figures.dir)),
+  dir.create(figures.dir, recursive = TRUE),
+  "Figures directory for today exists already!"
+)
+ 
+options(stringsAsFactors = FALSE)
+```
+
+Libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggsci)
+library(stringr)
+library(circlize)
+library(ggprism)
+library(purrr)
+library(iNEXT)
+library(ggpubr)
+library(forcats)
+library(ggalluvial)
+library(vegan)
+library(ggseqlogo)
+library(scifer)
+library(tidytext)
+library(lme4)
+library(lmerTest) 
+library(ggridges)
+```
+
+Setting the theme
+```{r}
+theme_set(
+  theme_prism() +
+    theme(
+      aspect.ratio = 1,
+      legend.position = "right"
+    )
+)
+
+#colours
+scale_fill_malaria <- function(...) {
+  scale_fill_manual(
+    values = c(
+      "blood_D16" = "#92C851",
+      "blood_D49" = "#C85157", 
+      "blood_D66" = "#946edb",
+      "BM_D66"    = "#51C8C2",
+      "203hi-LMQ" = "#FF6004",
+      "203lo-LMQ" = "#FFB58A",
+      "203hi-MM"  = "#1C4A87",
+      "203lo-MM"  = "#9EBFEB",
+      "MM"        = "#1FB4FF",
+      "LMQ"       = "#C82909"
+    ),
+    ...
+  )
+}
+
+scale_color_malaria <- function(...) {
+  scale_color_manual(
+   values = c(
+     "blood_D16" = "#92C851",
+      "blood_D49" = "#C85157", 
+      "blood_D66" = "#946edb",
+      "BM_D66"    = "#51C8C2",
+      "203hi-LMQ" = "#FF6004",
+      "203lo-LMQ" = "#FFB58A",
+      "203hi-MM"  = "#1C4A87",
+      "203lo-MM"  = "#9EBFEB",
+      "MM"        = "#1FB4FF",
+      "LMQ"       = "#C82909"
+    ),
+    ...
+  )
+}
+```
+
+Data
+```{r}
+data <- readRDS("~/Desktop/Loré Lab/BCR/BCR_analysis/data/260303_aa_lineage_clonotypes_all_igxplore.rds")
+
+metadata <- read.csv("../data/metadata_file.tsv", sep = "\t")
+metadata$animal_ID <- as.character(metadata$animal_ID)
+
+df <- read.table("/Users/ju-hye.lim/Desktop/Loré Lab/BCR/BCR_analysis/data/igblast_output_with_c.tsv", sep = '\t', header = TRUE)
+```
+
+Data wrangling
+```{r}
+data <- data %>%
+  mutate(
+    tissue = case_when(
+      grepl("D16", timepoint) ~ "blood_D16",
+      grepl("smartseq_blood", id) ~ "blood_D66",
+      grepl("smartseq_BM", id) ~ "BM_D66",
+      grepl("smartseq_MBC_blood", id) ~ "BM_D66",
+      grepl("M4FGR", sequence_id) ~ "blood_D66",
+      grepl("LW99H", sequence_id) ~ "BM_D66",
+      grepl("D49", timepoint) ~ "blood_D49",
+      TRUE ~ "unknown"
+    )
+  ) %>%
+  mutate(animal_ID = case_when(
+    grepl("D16", timepoint) ~ str_sub(sequence_id,1, 4),
+    str_starts(id, "smartseq") ~ "5013",
+    str_starts(id, "S") ~ str_extract(id, "(?<=S)\\d+"),
+    str_starts(id, "M4FGR") ~ "3001",
+    grepl("D49", timepoint) ~ str_sub(sequence_id,1, 4),
+    TRUE ~ NA_character_
+))%>%
+  left_join(metadata, by = "animal_ID")
+
+#making a cdr3_aa_length column based on cdr3_aa col
+data <- data %>%
+  mutate(cdr3_aa_length = nchar(cdr3_aa))
+
+#removing alleles from v_call and j_call
+data <- data %>%
+  mutate(v_gene = str_extract(v_call, "^[^*]+"))
+
+data <- data %>%
+  mutate(j_gene = str_extract(j_call, "^[^*]+"))
+
+#single cell sanger data
+data_sc <- data %>%
+filter(tissue %in% c("blood_D16", "blood_D49"))
+
+#bulk data
+data_bulk <- data %>%
+filter(grepl("M4FGR|LW99H", sequence_id))
+
+#removing SHM <= 20 + outlier removal
+data_filtered <- data %>%
+  group_by(tissue) %>%
+  filter(
+    V_SHM >= 0,                                          # no negative SHM
+    V_SHM <= 20,                                         # biological ceiling
+    V_SHM <= quantile(V_SHM, 0.99, na.rm = TRUE)        # remove top 1% per timepoint
+  ) %>%
+  ungroup()
+
+summary <- data %>%
+  group_by(group, tissue) %>%
+  summarise(n = n())
+```
+
+Statistical comparisons
+```{r}
+comparisons_tissues <- list(
+  c("blood_D16", "blood_D66"),
+  c("blood_D16", "blood_D49"),
+  c("blood_D49", "blood_D66"),
+  c("blood_D49", "BM_D66"),
+  c("blood_D16", "BM_D66"),
+  c("BM_D66", "blood_D66")
+)
+
+comparisons_groups <- list(
+  c("203hi-LMQ", "203hi-MM"),
+  c("203hi-LMQ", "203lo-MM"),
+  c("203hi-MM",  "203lo-MM")
+)
+
+comparisons_adj <- list(
+  c("MM", "LMQ")
+)
+```
+
+
+******************************************
+
+somatic hypermutation (v_shm)
+```{r}
+
+# add n to x axis labels
+n_label <- data_filtered %>% 
+  group_by(tissue) %>% 
+  summarise(n = n()) %>%
+  mutate(label = paste0(tissue, "\n(n=", n, ")"))
+
+ggplot(data_filtered, aes(x = tissue, y = V_SHM, fill = tissue)) +
+  geom_boxplot() +
+    scale_fill_malaria()+
+  stat_compare_means(comparisons = comparisons_tissues,
+                     method = "wilcox.test", 
+                     label = "p.signif") +
+  scale_x_discrete(labels = setNames(n_label$label, n_label$tissue))+
+  labs(
+       x = "Timepoint",
+       y = "% of Somatic Hypermutation")+
+  theme(legend.position = "none", axis.text = element_text(size = 16), axis.title = element_text(size = 18))
+
+
+#save
+ggsave(filename = paste0(figures.dir, "IGHV_SHM_timepoint_v3.svg"), width = 10, height = 6)
+
+
+data_filtered %>%
+  ggplot(aes(x = V_SHM, y = tissue, fill = tissue)) +
+  geom_density_ridges(
+    alpha = 0.7, scale = 2.5, bandwidth = 0.5, 
+    from = 0, to = 20) +
+  scale_fill_malaria() +
+  scale_y_discrete(expand = expansion(mult = c(0.05, 0.3))) +
+  labs(x = "% Somatic Hypermutation", y = NULL) +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18), legend.position = "none")
+
+#save
+ggsave(filename = paste0(figures.dir, "IGHV_SHM_timepoint_dist.svg"), width = 10, height = 6)
+
+```
+
+******************************************
+CDR3 length by aa
+```{r}
+
+n_label <- data %>% 
+  group_by(tissue) %>% 
+  summarise(n = n()) %>%
+  mutate(label = paste0(tissue, "\n(n=", n, ")"))
+
+ggplot(data, aes(x = tissue, y = cdr3_aa_length, fill = tissue)) +
+  geom_boxplot() +
+  scale_fill_malaria()+
+  stat_compare_means(comparisons = comparisons_tissues,
+                     method = "wilcox.test", 
+                     label = "p.signif") +
+  scale_x_discrete(labels = setNames(n_label$label, n_label$tissue))+
+  theme(legend.position = "none", axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+  labs(x = "Timepoint",
+       y = "CDR3 Length (AA)")
+
+#save
+ggsave(filename = paste0(figures.dir, "IGH_CDR3_length_timepoint.svg"), width = 10, height = 6)
+
+#distribution
+data %>%
+  ggplot(aes(x = cdr3_aa_length, y = tissue, fill = tissue)) +
+  geom_density_ridges(
+    alpha = 0.7, scale = 2.5, bandwidth = 0.5, 
+    from = 4, to = 22) +
+  scale_fill_malaria() +
+  scale_y_discrete(expand = expansion(mult = c(0.05, 0.3))) +
+  labs(x = "CDR3 Length (AA)", y = "Timepoint") +
+  theme(legend.position = "none", axis.text = element_text(size = 16), axis.title = element_text(size = 18))
+
+#save
+ggsave(filename = paste0(figures.dir, "IGH_CDR3_length_timepoint_dist.svg"), width = 10, height = 6)
+
+```
+
+
+
+******************************************
+
+IGHV Gene usage (%) by timepoint (top 5 of each timepoint shown)
+```{r}
+data %>%
+  count(tissue, v_gene) %>%
+  group_by(tissue) %>%
+  mutate(proportion = n / sum(n) * 100) %>%
+  top_n(10, n) %>%
+  ggplot(aes(x = tissue, y = v_gene, fill = proportion)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "#FAEBEF", high = "#84223C") +
+  geom_text(aes(label = round(proportion, 1)), color = "black", size = 5, fontface = "bold") +
+  labs(x = "Timepoint",
+       y = "V Gene",
+       fill = "% of Total") +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 20), legend.title = element_text(size = 15, face = "bold", color = "black"))
+
+#save
+ggsave(filename = paste0(figures.dir, "top5_IGHV_by_timepoint_heatmap.svg"), width = 10, height = 6)
+```
+
+Top 10 Frequency
+```{r}
+top10_summary <- data %>%
+  count(tissue, v_gene) %>%
+  group_by(tissue) %>%
+  mutate(proportion = n / sum(n) * 100) %>%
+  top_n(10, n) %>%
+  summarise(
+    top10_pct    = sum(proportion),      # total % accounted for by top 10
+    n_vgenes     = n(),                  # should be 10 for each tissue
+    .groups      = "drop"
+  )
+
+print(top10_summary)
+
+
+top10_summary <- data %>%
+  count(tissue, v_gene) %>%
+  group_by(tissue) %>%
+  mutate(proportion = n / sum(n) * 100) %>%
+  mutate(total_unique_vgenes = n_distinct(v_gene)) %>%   # total unique v genes per tissue
+  top_n(10, n) %>%
+  summarise(
+    top10_pct          = round(sum(proportion), 1),
+    total_unique_vgenes = first(total_unique_vgenes),     # same value for all rows so just take first
+    n_vgenes           = n(),
+    .groups            = "drop"
+  )
+
+print(top10_summary)
+```
+normalised trajectory
+```{r}
+v_genes_of_interest <- c("IGHV3-88", "IGHV3-NL_17", "IGHV3-50", "IGHV3-NL_11", "IGHV4-NL_33", 
+                         "IGHV7-86", "IGHV4-149", "IGHV3-172", "IGHV4-117", "IGHV3-NL_19")
+
+vgene_normalized <- data %>%
+  filter(v_gene %in% v_genes_of_interest) %>%
+  group_by(animal_ID, tissue, v_gene) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  left_join(
+    data %>%
+      group_by(animal_ID, tissue) %>%
+      summarise(total = n(), .groups = "drop"),
+    by = c("animal_ID", "tissue")
+  ) %>%
+  mutate(freq = n / total * 100)
+
+vgene_summary <- vgene_normalized %>%
+  group_by(tissue, v_gene) %>%
+  summarise(
+    mean_freq = mean(freq, na.rm = TRUE),
+    se_freq   = sd(freq, na.rm = TRUE) / sqrt(n()),
+    .groups   = "drop"
+  )
+
+ggplot(vgene_summary, aes(x = tissue, y = mean_freq,
+                           color = v_gene, group = v_gene)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_freq - se_freq,
+                    ymax = mean_freq + se_freq),
+                width = 0.2) +
+  scale_color_observable() +
+  labs(x     = "Timepoint",
+       y     = "Mean V Gene Frequency (%)",
+       color = "V Gene") +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 20), legend.text  = element_text(size = 14))
+
+#save
+ggsave(filename = paste0(figures.dir, "top_5_D16_IGHV_trajectory_norm_3.svg"),  width = 10, height = 6)
+```
+
+IGHV richness
+```{r}
+data %>%
+  group_by(tissue) %>%
+  summarise(n_unique_vgenes = n_distinct(v_gene)) %>%
+  ggplot(aes(x = tissue, y = n_unique_vgenes, fill = tissue)) +
+  geom_col() +
+  geom_text(aes(label = n_unique_vgenes),    # adds number on top of each bar
+            vjust = -0.5, size = 5) +
+  scale_fill_malaria() +
+  labs(x = NULL,
+       y = "Number of Unique V Genes") +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 18), legend.position = "none")
+
+#save
+ggsave(filename = paste0(figures.dir, "V_gene_richness_time.svg"),  width =6 , height = 6)
+
+```
+
+******************************************
+Clonotype analysis - scSanger (only looking at D16 and D49)
+-In order to run diversity analysis/normalization, need to drop animals that do not have enough sequences/have many unique clonotypes.
+-Therefore, looking at number of sequences per animal and number of unique clonotypes is important
+```{r}
+complete_animals <- c("1010", "2008", "5013", "6017", "6003", "9002")
+
+#sequence per animal
+sc_summary <- data_sc %>%
+  filter(animal_ID %in% complete_animals) %>%
+  group_by(animal_ID, timepoint, clone_id) %>%
+  summarise(clone_size = n(), .groups = "drop")
+
+sc_summary %>%
+  arrange(animal_ID, clone_size) %>%           # sort smallest to largest within each animal
+  mutate(clone_id = factor(clone_id,           # fix order by converting to factor
+                           levels = unique(clone_id))) %>%
+  ggplot(aes(x = animal_ID, y = clone_size, fill = clone_size)) +
+  geom_bar(position="stack", stat="identity", color = "black") +
+  scale_fill_viridis_c() +
+  labs(x = "Animal ID", y = "# sequences", fill = "Clonotype size") +
+  stat_summary(fun = sum, aes(label = after_stat(y), group = animal_ID), geom = "text", vjust = -.2) +
+  theme_classic() +
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18), strip.text = element_text(size = 18), legend.title=element_text(size=14), legend.text = element_text(size = 14))+
+  facet_wrap(~timepoint, scales = "free_x")
+
+#save
+ggsave(filename = paste0(figures.dir, "sc_clonotype_variability.svg"), width = 12, height = 7)
+```
+
+Clonotype analysis - Bulk
+```{r}
+#sequence per animal
+bulk_summary <- data_bulk %>%
+  filter(!animal_ID=="6005")%>%
+  group_by(animal_ID, tissue, clone_id) %>%
+  summarise(clone_size = n(), .groups = "drop")
+
+bulk_summary %>%
+  arrange(animal_ID, clone_size) %>%           # sort smallest to largest within each animal
+  mutate(clone_id = factor(clone_id,           # fix order by converting to factor
+                           levels = unique(clone_id))) %>%
+  ggplot(aes(x = animal_ID, y = clone_size, fill = clone_size)) +
+  geom_bar(position="stack", stat="identity", color = "black") +
+  scale_fill_viridis_c() +
+  labs(x = "Animal ID", y = "# sequences", fill = "Clonotype size") +
+  stat_summary(fun.y = sum, aes(label = after_stat(y), group = animal_ID), geom = "text", vjust = -.2) +
+  theme_classic() +
+  facet_wrap(~tissue, scales = "free_x") +
+   theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18), strip.text = element_text(size = 18), legend.title=element_text(size=14), legend.text = element_text(size = 14))
+
+#save
+ggsave(filename = paste0(figures.dir, "bulk_clonotype_variability.svg"), width = 16, height = 8)
+
+
+```
+
+
+
+Clonal Diversity
+Rodrigo's code: https://rodrigarc.github.io/rabies_mRNA/results/lab_book/bcr-repertoire-analysis.html
+
+Chao1 - Bulk
+```{r}
+
+bulk_summary <- bulk_summary %>%
+  mutate(tissue = str_remove(tissue, "_D66"))%>%
+  mutate(ID = paste0(animal_ID, "_", tissue))
+
+# Run chao1 100 times and collect the values
+chaox100 <- function(x){
+  replicate(100, {
+  subsample <-  rrarefy(x,min(rowSums(x)))
+  chao <- estimateR(subsample)
+  return(chao)
+  })}
+
+# Extract columns from df, remove NAs, and reorder based on decreasing value
+extract_and_order <- function(df, column) {
+  group <- df[[column]][!is.na(df[[column]])]
+  group <- group[order(group, decreasing = TRUE)]
+  return(group)
+}
+
+# Save as list the clonal size for each individual
+list_clonal_size <- list()
+for(i in unique(bulk_summary$ID)){
+  list_clonal_size[[i]] <- bulk_summary %>% filter(ID == i) %>% pull(clone_size)
+}
+
+# Remove individuals with less than 20 sequences since that sample size is too small, arbitrary number based on our sequencing depth
+  {
+    filt_ls_clonal_size <- list_clonal_size[lapply(list_clonal_size, function(x) sum(x)) > 20]
+  filt_ls_clonal_size_chao100x <- lapply(filt_ls_clonal_size, function(x) x[order(x, decreasing = TRUE)])
+  max_length <- do.call(max, lapply(filt_ls_clonal_size_chao100x, length))
+  
+  for(l in names(filt_ls_clonal_size_chao100x)){
+    length(filt_ls_clonal_size_chao100x[[l]]) <- max_length
+  }
+  list_names <- names(filt_ls_clonal_size_chao100x)
+  filt_ls_clonal_size_chao100x <- lapply(filt_ls_clonal_size_chao100x, as.data.frame)
+  filt_ls_clonal_size_chao100x <- do.call(cbind, filt_ls_clonal_size_chao100x)
+  colnames(filt_ls_clonal_size_chao100x) <- list_names
+  input_chao <- as.data.frame(t(filt_ls_clonal_size_chao100x))
+  input_chao[is.na(input_chao)] <- 0
+}
+```
+
+iNEXT
+```{r}
+inextx100 <- function(x, level, subsampling){
+  inext_D <- list()
+  replicate(100, {
+  subsample <- rrarefy(unlist(x), subsampling)
+  subsample <-  subsample[order(subsample, decreasing = T)]
+  inext_D[[i]] <- estimateD(subsample, q = c(0,1,2), datatype = "abundance", base = "size", level = level, nboot = 0)
+  return(inext_D)})
+}
+
+inext_obj <- lapply(filt_ls_clonal_size, inextx100, level = NULL, subsampling = 24)
+inext_obj <- lapply(inext_obj, data.table::rbindlist)
+inext_rep_100 <- data.table::rbindlist(inext_obj, idcol = TRUE, fill = TRUE) %>%
+  mutate(ID = .id, Group =plyr::mapvalues(ID, from = c("1010_BM", "1010_blood", "2001_BM", "2001_blood", "2008_BM", "2008_blood", "2010_BM", "2010_blood", "5009_BM", "5009_blood", "5013_BM", "5013_blood", "6003_BM", "6003_blood", "6005_BM", "6005_blood", "6017_BM", "6017_blood", "7010_BM", "7010_blood", "8002_BM", "9002_BM", "9002_blood"), to = c("BM", "blood", "BM", "blood", "BM", "blood", "BM", "blood", "BM", "blood", "BM", "blood", "BM", "blood", "BM", "blood", "BM", "blood", "BM", "blood", "BM","BM", "blood"))) %>%
+  group_by(ID, Order.q,Group) %>%
+  summarise(avg_estimator = mean(qD))
+
+inext_rep_100 %>%
+  write.csv(paste0(result.dir,"diversity_per_bulk.csv"), row.names = FALSE)
+
+inext_rep_100 %>%
+  mutate(Order.q = plyr::mapvalues(Order.q, from = c(0,1,2), to = c("Clonotype richness", "Shannon diversity", "Simpson diversity"))) %>%
+  ggplot(aes(Group, avg_estimator, group = Group, fill = Group)) + #issue bc not into groups; how to make by timepoint
+  geom_boxplot(outlier.shape = NA, aes(middle = mean(avg_estimator))) +
+  geom_point(position = position_jitter(.2), size = 3) +
+ stat_compare_means(method = "wilcox.test", label = "p.signif", comparisons = list(c("BM", "blood")), paired = FALSE, label.y = c(20)) +
+  theme_classic() +
+  labs(y = "Estimator\n(100x mean)", x = "") +
+  theme(legend.position = "none",axis.text = element_text(size = 16), axis.title = element_text(size = 18), strip.text = element_text(size = 18)) +
+  facet_wrap(~Order.q)
+ 
+#save
+ggsave(filename = paste0(figures.dir, "bulk_clonotype_diversity.svg"), width = 10, height = 6)
+
+
+```
+
+
+
+Chao1 - Single-cell
+```{r}
+sc_summary <- sc_summary %>%
+  mutate(ID = paste0(animal_ID, "_", timepoint))%>%
+  filter(!animal_ID=="6017")
+
+# Run chao1 100 times and collect the values
+chaox100 <- function(x){
+  replicate(100, {
+  subsample <-  rrarefy(x,min(rowSums(x)))
+  chao <- estimateR(subsample)
+  return(chao)
+  })}
+
+# Extract columns from df, remove NAs, and reorder based on decreasing value
+extract_and_order <- function(df, column) {
+  group <- df[[column]][!is.na(df[[column]])]
+  group <- group[order(group, decreasing = TRUE)]
+  return(group)
+}
+
+# Save as list the clonal size for each individual
+list_clonal_size <- list()
+for(i in unique(sc_summary$ID)){
+  list_clonal_size[[i]] <- sc_summary %>% filter(ID == i) %>% pull(clone_size)
+}
+
+# Remove individuals with less than 20 sequences since that sample size is too small, arbitrary number based on our sequencing depth
+  {
+    filt_ls_clonal_size <- list_clonal_size[lapply(list_clonal_size, function(x) sum(x)) > 20]
+  filt_ls_clonal_size_chao100x <- lapply(filt_ls_clonal_size, function(x) x[order(x, decreasing = TRUE)])
+  max_length <- do.call(max, lapply(filt_ls_clonal_size_chao100x, length))
+  
+  for(l in names(filt_ls_clonal_size_chao100x)){
+    length(filt_ls_clonal_size_chao100x[[l]]) <- max_length
+  }
+  list_names <- names(filt_ls_clonal_size_chao100x)
+  filt_ls_clonal_size_chao100x <- lapply(filt_ls_clonal_size_chao100x, as.data.frame)
+  filt_ls_clonal_size_chao100x <- do.call(cbind, filt_ls_clonal_size_chao100x)
+  colnames(filt_ls_clonal_size_chao100x) <- list_names
+  input_chao <- as.data.frame(t(filt_ls_clonal_size_chao100x))
+  input_chao[is.na(input_chao)] <- 0
+}
+```
+
+iNEXT
+```{r}
+inextx100 <- function(x, level, subsampling){
+  inext_D <- list()
+  replicate(100, {
+  subsample <- rrarefy(unlist(x), subsampling)
+  subsample <-  subsample[order(subsample, decreasing = T)]
+  inext_D[[i]] <- estimateD(subsample, q = c(0,1,2), datatype = "abundance", base = "size", level = level, nboot = 0)
+  return(inext_D)})
+}
+
+inext_obj <- lapply(filt_ls_clonal_size, inextx100, level = NULL, subsampling = 24)
+inext_obj <- lapply(inext_obj, data.table::rbindlist)
+inext_rep_100 <- data.table::rbindlist(inext_obj, idcol = TRUE, fill = TRUE) %>%
+  mutate(ID = .id, Group =plyr::mapvalues(ID, from = c("1010_D16", "1010_D49", "2008_D16", "2008_D49", "5013_D16", "5013_D49", "6003_D16", "6003_D49", "6017_D16", "6017_D49", "9002_D16", "9002_D49"), to = c("D16", "D49", "D16", "D49", "D16", "D49", "D16", "D49", "D16", "D49", "D16", "D49"))) %>%
+  group_by(ID, Order.q,Group) %>%
+  summarise(avg_estimator = mean(qD))
+
+inext_rep_100 %>%
+  write.csv(paste0(result.dir,"diversity_per_SC.csv"), row.names = FALSE)
+
+inext_rep_100 %>%
+  mutate(Order.q = plyr::mapvalues(Order.q, from = c(0,1,2), to = c("Clonotype richness", "Shannon diversity", "Simpson diversity"))) %>%
+  ggplot(aes(Group, avg_estimator, group = Group, fill = Group)) + #issue bc not into groups; how to make by timepoint
+  geom_boxplot(outlier.shape = NA, aes(middle = mean(avg_estimator))) +
+  geom_point(position = position_jitter(.2), size = 3) +
+ stat_compare_means(method = "wilcox.test", label = "p.signif", comparisons = list(c("D16", "D49")), paired = FALSE, label.y = c(50)) +
+  theme_classic() +
+  scale_fill_bmj()+
+  labs(y = "Estimator\n(100x mean)", x = "") +
+  theme(legend.position = "none", axis.text = element_text(size = 16), axis.title = element_text(size = 18), strip.text = element_text(size = 18)) +
+  facet_wrap(~Order.q)
+
+#save
+ggsave(filename = paste0(figures.dir, "sc_clonotype_diversity.svg"), width = 10, height = 6)
+
+
+```
+
+mAbs comparison -> alignment of single-cell
+```{r}
+mAbs<- c("5013_03_E08","6017_P2_G11", "5013_02_H01")
+daa <- data %>%
+  mutate(aa_pos52 = str_sub(VDJ_aa, 52, 52))%>%
+  filter(sequence_id %in% mAbs)
+```
+
+
+```{r}
+sessionInfo()
+```

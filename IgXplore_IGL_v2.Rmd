@@ -1,0 +1,274 @@
+---
+title: "IgXplore_IGL"
+output: html_document
+date: "2026-05-05"
+---
+
+```{r, global.options, include=FALSE}
+# Global knitr settings 
+# Set up figures and chunks messages
+ 
+knitr::opts_knit$set(
+  echo = TRUE,
+  root.dir = getwd(),
+  fig.width = 6, fig.height = 5,
+  fig.align = "center",
+  out.width = 768,
+  fig.pos = "H",
+  warning = FALSE,
+  message = FALSE
+)
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 6, fig.height = 5,
+  fig.align = "center",
+  out.width = 768,
+  fig.pos = "H"
+)
+ 
+
+result.dir <- paste0("../results/IgXplore/", Sys.Date(), "/")
+figures.dir <- paste0(result.dir, "Graphs/")
+ 
+# Create result.dir with date if not existent
+ifelse(isFALSE(dir.exists(result.dir)),
+  dir.create(result.dir, recursive = TRUE),
+  "Result directory for today exists already!"
+)
+ 
+# Create figures.dir with date if not existent
+ifelse(isFALSE(dir.exists(figures.dir)),
+  dir.create(figures.dir, recursive = TRUE),
+  "Figures directory for today exists already!"
+)
+ 
+options(stringsAsFactors = FALSE)
+```
+
+Libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggsci)
+library(stringr)
+library(circlize)
+library(ggprism)
+library(purrr)
+library(iNEXT)
+library(ggpubr)
+library(forcats)
+library(ggalluvial)
+library(vegan)
+library(ggseqlogo)
+library(scifer)
+library(tidytext)
+```
+
+Setting the theme
+```{r}
+theme_set(
+  theme_prism() +
+    theme(
+      aspect.ratio = 1,
+      legend.position = "right"
+    )
+)
+
+#colours
+scale_fill_malaria <- function(...) {
+  scale_fill_manual(
+    values = c(
+      "blood_D16" = "#92C851",
+      "blood_D49" = "#C85157", 
+      "blood_D66" = "#946edb",
+      "BM_D66"    = "#51C8C2",
+      "D16"       = "#92C851",
+      "D49"       = "#C85157",
+      "D66"       = "#6E7EDB",
+      "203hi-LMQ" = "#FF6004",
+      "203lo-LMQ" = "#FFB58A",
+      "203hi-MM"  = "#1C4A87",
+      "203lo-MM"  = "#78A6E3",
+      "MM"        = "#1FB4FF",
+      "LMQ"       = "#C82909"
+    ),
+    ...
+  )
+}
+
+scale_color_malaria <- function(...) {
+  scale_color_manual(
+    values = c(
+      "blood_D16" = "#92C851",
+      "blood_D49" = "#C85157", 
+      "blood_D66" = "#946edb",
+      "BM_D66"    = "#51C8C2",
+      "D16"       = "#92C851",
+      "D49"       = "#C85157",
+      "D66"       = "#6E7EDB",
+      "203hi-LMQ" = "#FF6004",
+      "203lo-LMQ" = "#FFB58A",
+      "203hi-MM"  = "#1C4A87",
+      "203lo-MM"  = "#78A6E3",
+      "MM"        = "#1FB4FF",
+      "LMQ"       = "#C82909"
+    ),
+    ...
+  )
+}
+```
+
+Data
+```{r}
+light <- read.table("/Users/ju-hye.lim/Desktop/Loré Lab/BCR/BCR_analysis/data/260320_LC_data_filtered_v2.tsv", sep = '\t', header = TRUE)
+```
+
+Data wrangling
+```{r}
+light <- light %>%
+  mutate(
+    tissue = case_when(
+      grepl("D16", timepoint) ~ "blood_D16",
+      grepl("smartseq_blood_LC", id) ~ "blood_D66",
+      grepl("smartseq_BM_LC", id) ~ "BM_D66",
+      grepl("smartseq_MBC_blood", id) ~ "BM_D66",
+      grepl("M4FGR", sequence_id) ~ "blood_D66",
+      grepl("LW99H", sequence_id) ~ "BM_D66",
+      grepl("D49", timepoint) ~ "blood_D49",
+      TRUE ~ "unknown"
+    )
+  )
+
+light <- light %>%
+  mutate(cdr3_aa_length = nchar(cdr3_aa))
+
+#removing SHM <= 20 + outlier removal
+light_filtered <- light %>%
+  group_by(timepoint) %>%
+  filter(
+    V_SHM >= 0,                                          # no negative SHM
+    V_SHM <= 20,                                         # biological ceiling
+    V_SHM <= quantile(V_SHM, 0.99, na.rm = TRUE)        # remove top 1% per timepoint
+  ) %>%
+  ungroup()
+
+#removing CDR3 aa length = 0
+light_cdr3<- light %>%
+  filter(
+    !is.na(cdr3_aa_length),          
+    cdr3_aa_length > 0)
+
+```
+
+Statistical comparisons
+```{r}
+comparisons_tissues <- list(
+  c("blood_D16", "blood_D66"),
+  c("blood_D16", "blood_D49"),
+  c("blood_D49", "blood_D66"),
+  c("blood_D49", "BM_D66"),
+  c("blood_D16", "BM_D66"),
+  c("BM_D66", "blood_D66")
+)
+
+comparisons_timepoints <- list(
+  c("D16", "D49"),
+  c("D16", "D66"),
+  c("D49", "D66")
+)
+
+comparisons_groups <- list(
+  c("203hi-LMQ", "203hi-MM"),
+  c("203hi-LMQ", "203lo-MM"),
+  c("203hi-MM",  "203lo-MM")
+)
+
+comparisons_adj <- list(
+  c("MM", "LMQ")
+)
+```
+
+********************************
+somatic hypermutation (v_shm)
+```{r}
+n_label <- light_filtered %>% 
+  group_by(timepoint) %>% 
+  summarise(n = n()) %>%
+  mutate(label = paste0(timepoint, "\n(n=", n, ")"))
+
+ggplot(light_filtered, aes(x = timepoint, y = V_SHM, fill = timepoint)) +
+  geom_boxplot() +
+    scale_fill_malaria()+
+  stat_compare_means(comparisons = comparisons_timepoints,
+                     method = "wilcox.test", 
+                     label = "p.signif") +
+  scale_x_discrete(labels = setNames(n_label$label, n_label$timepoint))+
+  labs(x = "Timepoint",
+       y = "% of Somatic Hypermutation")+
+  theme(legend.position = "none", axis.text = element_text(size = 16), axis.title = element_text(size = 18))
+
+#save
+ggsave(filename = paste0(figures.dir, "IGLV_SHM_timepoint.svg"), width = 10, height = 6)
+
+#distribution
+light_filtered %>%
+  ggplot(aes(x = V_SHM, y = timepoint, fill = timepoint)) +
+  geom_density_ridges(
+    alpha = 0.7, scale = 2.5, 
+    from = 0, to = 20) +
+  scale_fill_malaria() +
+  scale_y_discrete(expand = expansion(mult = c(0.05, 0.3))) +
+  labs(x = "% Somatic Hypermutation", y = NULL) +
+  theme(legend.position = "none", axis.text = element_text(size = 16), axis.title = element_text(size = 18))
+
+#save
+ggsave(filename = paste0(figures.dir, "IGLV_SHM_timepoint_dist.svg"), width = 10, height = 6)
+
+```
+
+********************************
+
+CDR3 length by aa
+```{r}
+n_label <- light_cdr3 %>% 
+  group_by(timepoint) %>% 
+  summarise(n = n()) %>%
+  mutate(label = paste0(timepoint, "\n(n=", n, ")"))
+
+ggplot(light_cdr3, aes(x = timepoint, y = cdr3_aa_length, fill = timepoint)) +
+  geom_boxplot() +
+  scale_fill_malaria()+
+  stat_compare_means(comparisons = comparisons_timepoints,
+                     method = "wilcox.test", 
+                     label = "p.signif") +
+  theme(legend.position = "none", axis.text = element_text(size = 16), axis.title = element_text(size = 18)) +
+   labs(x = "Timepoint",
+       y = "CDR3 Length (AA)")
+
+#save
+ggsave(filename = paste0(figures.dir, "IGL_CDR3_length_timepoint.svg"), width = 10, height = 6)
+
+#distribution
+light_cdr3 %>%
+  ggplot(aes(x = cdr3_aa_length, y = timepoint, fill = timepoint)) +
+  geom_density_ridges(
+   alpha = 0.7, scale = 2.5,
+    from = 5, to = 13) +
+  scale_fill_malaria() +
+  scale_y_discrete(expand = expansion(mult = c(0.05, 0.3))) +
+  labs(x = "CDR3 Length (AA)", y = "Timepoint") +
+  theme(legend.position = "none", axis.text = element_text(size = 16), axis.title = element_text(size = 18))
+
+#save
+ggsave(filename = paste0(figures.dir, "IGL_CDR3_length_timepoint_dist.svg"), width = 10, height = 6)
+
+```
+
+
+
+
+```{r}
+sessionInfo()
+```

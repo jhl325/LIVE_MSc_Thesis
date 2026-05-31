@@ -1,0 +1,114 @@
+---
+title: "ELISA"
+output: html_document
+date: "2026-04-08"
+---
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggsci)
+library(ggprism)
+library(stringr)
+library(purrr)
+library(drc)
+```
+
+
+ELISA - Ab binding to p126, repeat, junction
+```{r}
+elisa <- read.csv("/Users/ju-hye.lim/Desktop/Loré Lab/BCR/ELISA/normalised_ELISA.csv")
+
+custom_labels <- c("NANP5"  = "Repeat (NANP5)", "NPDP" = "Junction (NPDP)", "p126" = "Truncated PfCSP (p126)")
+
+elisa %>%
+  mutate(Epitope = factor(Epitope, levels = c("p126", "NANP5", "NPDP"))) %>%
+  filter(!Group == "211hi-LMQ", !Epitope == "HpF") %>%
+  group_by(Group, Timepoint, Epitope) %>%
+  summarise(titer = mean(normalised, na.rm = TRUE),
+            se_titer = sd(normalised,na.rm = TRUE)/sqrt(n()),
+            .groups = "drop") %>%
+  ggplot(aes(x = Timepoint, y = titer, color = Group)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 3.5) +
+  geom_errorbar(aes(ymin = titer - se_titer,
+                    ymax = titer + se_titer),
+                width = 5)+
+  scale_y_log10(limits = c(10, NA),breaks = c(10, 100, 1000, 10000, 100000),
+              labels = c(expression(10^1), 
+                         expression(10^2),
+                         expression(10^3),
+                         expression(10^4),
+                         expression(10^5)))+
+  labs(x = "Days post prime",
+    y = "IgG Log ED50") +
+  facet_wrap(~Epitope, scales = "free", labeller = labeller(Epitope = custom_labels))+
+  scale_color_malaria()+
+  scale_x_continuous(breaks = c(0, 16, 31, 49, 66, 92, 120, 149, 176), expand = expansion(add = c(3, 5))) +
+  theme(axis.text = element_text(size = 18), axis.title = element_text(size = 22), strip.text= element_text(size = 18), legend.position = "none")
+
+#save
+ggsave(filename = paste0(figures.dir, "p126_ED50_no_HpF.svg"), width = 15, height = 6)
+
+```
+
+260305 Cloned mAb ELISA
+```{r}
+dfe <- read.csv("/Users/ju-hye.lim/Desktop/Loré Lab/BCR/ELISA/260305_elisa.csv")
+
+my_order <- c("CIS43", "mAb1210", "mAb4493", "D25", "LOR300", "LOR301","LOR302", "LOR303", "LOR304", "LOR305", "LOR306", "LOR307","LOR308", "LOR309")
+
+dfe_avg <- dfe %>%
+  group_by(plate)%>%
+  mutate(sample_base = str_remove(sample, "_\\d+$")) %>%
+  group_by(plate,sample_base, dilution, concentration) %>%
+  summarise(mean_abs = mean(absorbance, na.rm = TRUE),
+            se_abs   = sd(absorbance, na.rm = TRUE) / sqrt(n()),
+            .groups = "drop")%>%
+  mutate(sample_base = factor(sample_base, levels = my_order))
+
+#plot
+dfe_avg %>%
+  ggplot(aes(x = concentration, y = mean_abs, color = sample_base)) +
+  geom_line() +
+  scale_x_log10() +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_abs - se_abs,
+                    ymax = mean_abs + se_abs),
+                width = 0.2)+
+    labs(
+    x = "Concentration",
+    y = "Absorbance") +
+  theme(axis.text = element_text(size = 17), axis.title = element_text(size = 20), legend.text = element_text(size = 15))
+
+#save
+ggsave(filename = paste0(figures.dir, "mAb_elisa_1.svg"), width = 12, height = 8)
+
+```
+
+Avidity ELISA
+```{r}
+pool <- read.delim("/Users/ju-hye.lim/Desktop/Loré Lab/BCR/ELISA/260415_ED50.txt")
+
+pool$timepoint<- factor(pool$timepoint, levels=c("D0", "D16", "D31", "D49", "D66", "D176"))
+
+pool%>%
+  mutate(timepoint = as.numeric(gsub("D", "", timepoint)))%>%
+  filter(group=="pool")%>%
+  ggplot(aes(x = timepoint, y = AI_values, group = group, color = group)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(breaks = c(0, 16, 31, 49, 66, 176), expand = expansion(add = c(3, 5))) +
+  theme(axis.text = element_text(size = 14), axis.title = element_text(size = 18), legend.position = "none")+
+  labs(x = "Days post prime", y = "Avidity Index")
+
+
+#save
+ggsave(filename = paste0(figures.dir, "avidity_pool.svg"), width = 10, height = 6)
+```
+
+
+```{r}
+sessionInfo()
+```

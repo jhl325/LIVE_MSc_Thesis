@@ -1,0 +1,433 @@
+---
+title: "IgXplore_paired"
+output: html_document
+date: "2026-05-05"
+---
+
+```{r, global.options, include=FALSE}
+# Global knitr settings 
+# Set up figures and chunks messages
+ 
+knitr::opts_knit$set(
+  echo = TRUE,
+  root.dir = getwd(),
+  fig.width = 6, fig.height = 5,
+  fig.align = "center",
+  out.width = 768,
+  fig.pos = "H",
+  warning = FALSE,
+  message = FALSE
+)
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 6, fig.height = 5,
+  fig.align = "center",
+  out.width = 768,
+  fig.pos = "H"
+)
+ 
+
+result.dir <- paste0("../results/IgXplore/", Sys.Date(), "/")
+figures.dir <- paste0(result.dir, "Graphs/")
+ 
+# Create result.dir with date if not existent
+ifelse(isFALSE(dir.exists(result.dir)),
+  dir.create(result.dir, recursive = TRUE),
+  "Result directory for today exists already!"
+)
+ 
+# Create figures.dir with date if not existent
+ifelse(isFALSE(dir.exists(figures.dir)),
+  dir.create(figures.dir, recursive = TRUE),
+  "Figures directory for today exists already!"
+)
+ 
+options(stringsAsFactors = FALSE)
+```
+
+Libraries
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggsci)
+library(stringr)
+library(circlize)
+library(ggprism)
+library(purrr)
+library(iNEXT)
+library(ggpubr)
+library(forcats)
+library(ggalluvial)
+library(vegan)
+library(ggseqlogo)
+library(scifer)
+library(tidytext)
+```
+
+Setting the theme
+```{r}
+theme_set(
+  theme_prism() +
+    theme(
+      aspect.ratio = 1,
+      legend.position = "right"
+    )
+)
+
+#colours
+scale_fill_malaria <- function(...) {
+  scale_fill_manual(
+    values = c(
+      "blood_D16" = "#92C851",
+      "blood_D49" = "#C85157", 
+      "blood_D66" = "#946edb",
+      "BM_D66"    = "#51C8C2",
+      "D16"       = "#92C851",
+      "D49"       = "#C85157",
+      "D66"       = "#6E7EDB",
+      "203hi-LMQ" = "#FF6004",
+      "203lo-LMQ" = "#FFB58A",
+      "203hi-MM"  = "#1C4A87",
+      "203lo-MM"  = "#9EBFEB",
+      "MM"        = "#1FB4FF",
+      "LMQ"       = "#C82909"
+    ),
+    ...
+  )
+}
+
+scale_color_malaria <- function(...) {
+  scale_color_manual(
+    values = c(
+      "blood_D16" = "#92C851",
+      "blood_D49" = "#C85157", 
+      "blood_D66" = "#946edb",
+      "BM_D66"    = "#51C8C2",
+      "D16"       = "#92C851",
+      "D49"       = "#C85157",
+      "D66"       = "#6E7EDB",
+      "203hi-LMQ" = "#FF6004",
+      "203lo-LMQ" = "#FFB58A",
+      "203hi-MM"  = "#1C4A87",
+      "203lo-MM"  = "#9EBFEB",
+      "MM"        = "#1FB4FF",
+      "LMQ"       = "#C82909"
+    ),
+    ...
+  )
+}
+```
+
+Data
+```{r}
+heavy <- readRDS("~/Desktop/Loré Lab/BCR/BCR_analysis/data/260303_aa_lineage_clonotypes_all_igxplore.rds")
+
+metadata <- read.csv("../data/metadata_file.tsv", sep = "\t")
+metadata$animal_ID <- as.character(metadata$animal_ID)
+
+light <- read.table("/Users/ju-hye.lim/Desktop/Loré Lab/BCR/BCR_analysis/data/260320_LC_data_filtered_v2.tsv", sep = '\t', header = TRUE)
+
+```
+
+Data wrangling
+```{r}
+heavy <- heavy %>%
+  mutate(
+    tissue = case_when(
+      grepl("D16", timepoint) ~ "blood_D16",
+      grepl("smartseq_blood", id) ~ "blood_D66",
+      grepl("smartseq_BM", id) ~ "BM_D66",
+      grepl("smartseq_MBC_blood", id) ~ "BM_D66",
+      grepl("M4FGR", sequence_id) ~ "blood_D66",
+      grepl("LW99H", sequence_id) ~ "BM_D66",
+      grepl("D49", timepoint) ~ "blood_D49",
+      TRUE ~ "unknown"
+    )
+  ) %>%
+  mutate(animal_ID = case_when(
+    grepl("D16", timepoint) ~ str_sub(sequence_id,1, 4),
+    str_starts(id, "smartseq") ~ "5013",
+    str_starts(id, "S") ~ str_extract(id, "(?<=S)\\d+"),
+    str_starts(id, "M4FGR") ~ "3001",
+    grepl("D49", timepoint) ~ str_sub(sequence_id,1, 4),
+    TRUE ~ NA_character_
+))%>%
+  left_join(metadata, by = "animal_ID") #%>%
+  #filter(group != "211hi-LMQ") #exclude 211 animals
+
+#making a cdr3_aa_length column based on cdr3_aa col
+heavy <- heavy %>%
+  mutate(cdr3_aa_length = nchar(cdr3_aa))
+
+#removing alleles from v_call and j_call
+heavy <- heavy %>%
+  mutate(v_gene = str_extract(v_call, "^[^*]+"))
+
+heavy <- heavy %>%
+  mutate(j_gene = str_extract(j_call, "^[^*]+"))
+
+light <- light %>%
+  mutate(
+    tissue = case_when(
+      grepl("D16", timepoint) ~ "blood_D16",
+      grepl("smartseq_blood_LC", id) ~ "blood_D66",
+      grepl("smartseq_BM_LC", id) ~ "BM_D66",
+      grepl("smartseq_MBC_blood", id) ~ "BM_D66",
+      grepl("M4FGR", sequence_id) ~ "blood_D66",
+      grepl("LW99H", sequence_id) ~ "BM_D66",
+      grepl("D49", timepoint) ~ "blood_D49",
+      TRUE ~ "unknown"
+    )
+  )
+
+light <- light %>%
+  mutate(cdr3_aa_length = nchar(cdr3_aa))
+
+```
+
+Statistical comparisons
+```{r}
+comparisons_tissues <- list(
+  c("blood_D16", "blood_D66"),
+  c("blood_D16", "blood_D49"),
+  c("blood_D49", "blood_D66"),
+  c("blood_D49", "BM_D66"),
+  c("blood_D16", "BM_D66"),
+  c("BM_D66", "blood_D66")
+)
+
+comparisons_timepoints <- list(
+  c("D16", "D49"),
+  c("D16", "D66"),
+  c("D49", "D66")
+)
+
+comparisons_groups <- list(
+  c("203hi-LMQ", "203hi-MM"),
+  c("203hi-LMQ", "203lo-MM"),
+  c("203hi-MM",  "203lo-MM")
+)
+
+comparisons_adj <- list(
+  c("MM", "LMQ")
+)
+```
+
+********************************
+Joining IgL and IgH data
+```{r}
+dictionary <- read.csv("/Users/ju-hye.lim/Desktop/Loré Lab/BCR/BCR_analysis/data/dictionary_light_heavy_JL_ER_7.tsv", sep="\t")
+
+#visualize how many of each type of data you have between smartseq and single cell 
+light %>%
+  mutate(type = ifelse(grepl("R1|assemble", sequence_id), "smartseq", "single_cell")) %>%
+  count(type)
+
+#add a column to distinguise smartseq and single cell data + extract data based on which it is and fill LC_well_id
+light <- light %>%
+  mutate(
+    data_type = ifelse(grepl("R1|assemble", sequence_id), "smartseq", "single_cell"),
+    
+    LC_well_id = case_when(
+      # Single cell: extract plate + well (e.g. P1_kappa_A03 → P1_A03)
+      data_type == "single_cell" ~ paste(
+        str_extract(sequence_id, "^P?\\d+"),       # plate: P1 or 10
+        str_extract(sequence_id, "[A-Z]\\d+$"),    # well: A03
+        sep = "_"
+      ),
+      
+      # Bulk: extract only the well at the start (e.g. C3_R1_val_1_assemble0 → C3)
+      data_type == "smartseq" ~ str_extract(sequence_id, "^[A-Z]\\d+"),
+      
+      TRUE ~ NA_character_
+    )
+  )
+
+#sequence id for smartseq data has to change also into C3 instead of C3_R1_assemble...
+heavy <- heavy  %>%
+  filter(!grepl("M4FGR|LW99H", sequence_id)) %>%
+  mutate(
+    data_type = ifelse(grepl("R1|assemble", sequence_id), "smartseq", "single_cell"),
+    HC_well_id = case_when(
+      # Single cell: extract plate + well (e.g. P1_kappa_A03 → P1_A03)
+      data_type == "single_cell" ~ sequence_id,
+      # Bulk: extract only the well at the start (e.g. C3_R1_val_1_assemble0 → C3)
+      data_type == "smartseq" ~ str_extract(sequence_id, "^[A-Z]\\d+"),
+      TRUE ~ NA_character_
+    )
+  )
+
+# Checking both types look right
+light %>%
+  dplyr::select(sequence_id, data_type, LC_well_id) %>%
+  group_by(data_type) %>%
+  slice_head(n = 5)
+
+
+#link light chain with dictionary
+light_linked <- light %>%
+  left_join(dictionary, by = c("LC_well_id" = "LC_well_id"))
+
+#pair with heavy chain file
+paired <- light_linked %>%
+  left_join(heavy, by = c("HC_well_id" = "HC_well_id"), suffix = c("_light", "_heavy"))
+
+paired <- paired %>%
+  filter(!is.na(tissue_heavy))
+
+```
+
+********************************
+V gene pairs 
+```{r}
+# HC-LC pairs
+hc_lc_pairs <- paired %>%
+  filter(!is.na(v_gene), !is.na(v_call_light)) %>%
+  count(v_gene, v_call_light, sort = TRUE) %>%
+  mutate(frequency = n / sum(n) * 100)
+
+# Top 10 heavy and light V genes to keep the plot readable
+top_hc <- hc_lc_pairs %>% group_by(v_gene) %>% 
+  summarise(total = sum(n)) %>% slice_max(total, n = 10) %>% pull(v_gene)
+
+top_lc <- hc_lc_pairs %>% group_by(v_call_light) %>% 
+  summarise(total = sum(n)) %>% slice_max(total, n = 10) %>% pull(v_call_light)
+
+hc_lc_pairs %>%
+  filter(v_gene %in% top_hc, v_call_light %in% top_lc) %>%
+  ggplot(aes(x = v_call_light, y = v_gene, fill = frequency)) +
+  geom_tile(color = "#578B18") +
+  geom_text(aes(label = round(frequency, 1)), size = 5, fontface="bold") +
+  scale_fill_gradient(low = "#F3FBE9", high = "#578B18") +
+  labs(
+    x = "LC V Gene",
+    y = "HC V Gene",
+    fill = "Frequency (%)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1), legend.title = element_text(size = 14, face = "bold"), legend.text = element_text(size=14), axis.title = element_text(size=16))
+
+#save
+ggsave(filename = paste0(figures.dir, "heavy_light_pairs_heatmap.svg"), width =10, height =10)
+
+```
+
+Pairs per IGHV
+```{r}
+# frequency of each HC V gene across all pairings
+hc_in_pairs <- hc_lc_pairs %>%
+  group_by(v_gene) %>%
+  summarise(
+    total_freq    = sum(frequency),    # sum of all pairing frequencies for that HC V gene
+    total_n       = sum(n),            # raw count
+    n_lc_partners = n_distinct(v_call_light)  # how many different LC V genes it pairs with
+  ) %>%
+  arrange(desc(total_freq))
+
+write.csv(hc_in_pairs,
+          file = paste0(figures.dir, "hc_in_pairs.csv"),
+          row.names = FALSE)
+
+n_distinct(hc_lc_pairs$v_gene)
+```
+
+```{r}
+# frequency of each LC V gene across all pairings
+lc_in_pairs <- hc_lc_pairs %>%
+  group_by(v_call_light) %>%
+  summarise(
+    total_freq    = sum(frequency),    # sum of all pairing frequencies for that HC V gene
+    total_n       = sum(n),            # raw count
+    n_hc_partners = n_distinct(v_gene)  # how many different LC V genes it pairs with
+  ) %>%
+  arrange(desc(total_freq))
+
+write.csv(lc_in_pairs,
+          file = paste0(figures.dir, "lc_in_pairs.csv"),
+          row.names = FALSE)
+
+n_distinct(hc_lc_pairs$v_call_light)
+```
+
+
+
+********************************
+Evolution of top pairings by timepoint (D16 & D49)
+```{r}
+pairing_by_time <- paired %>%
+  filter(!is.na(v_gene), !is.na(v_call_light), !timepoint_light=="D66") %>%
+  mutate(pairing = paste(v_gene, v_call_light, sep = " / ")) %>%
+  count(tissue_light, pairing) %>%
+  group_by(tissue_light) %>%
+  mutate(frequency = n / sum(n) * 100) %>%
+  ungroup()
+
+# Get top N pairings by overall frequency (collapsed across timepoints)
+top_pairings <- pairing_by_time %>%
+  group_by(pairing) %>%
+  summarise(total = sum(n)) %>%
+  slice_max(total, n = 10) %>%          # adjust n to how many you want to track
+  pull(pairing)
+
+# Filter to only those pairings
+pairing_top <- pairing_by_time %>%
+  filter(pairing %in% top_pairings)
+
+pairing_top <- pairing_top %>%
+  tidyr::complete(tissue_light, pairing, fill = list(n = 0, frequency = 0))
+
+# Set your correct timepoint order
+pairing_top <- pairing_top %>%
+  mutate(tissue = factor(tissue_light, levels = c("blood_D16", "blood_D49")))  # adjust to yours
+
+ggplot(pairing_top, aes(x = tissue, y = frequency, 
+                         color = pairing, group = pairing)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  labs(
+    x = "Timepoint",
+    y = "Frequency (%)",
+    color = "VH / VL Pairing"
+  ) +
+  scale_y_continuous(limits = c(0,5), expand = expansion(mult = c(0,0.05)))+
+  theme(axis.text = element_text(size = 16), axis.title = element_text(size = 18))
+
+#save
+ggsave(filename = paste0(figures.dir, "evolution_pairing_over_time.svg"), width =10, height =10)
+
+```
+
+Locus usage
+```{r}
+paired_locus <- paired %>%
+  group_by(locus_light) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(percentage = n / sum(n) * 100)
+
+
+# pie chart showing IgK/IgL proportions per timepoint
+ggplot(paired_locus, aes(x = "", y = percentage, fill = locus_light)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  geom_text(aes(label = paste0(round(percentage, 1), "%")),
+            position = position_stack(vjust = 0.5),
+            size = 8, color = "black", fontface = "bold") +
+  scale_fill_manual(values = c("IGK" = "#FFD469", 
+                                "IGL" = "#6993FF")) +
+  labs(fill = "Locus") +
+  theme_void() +
+  theme(
+    strip.text       = element_text(size = 15),
+    legend.position  = "right", legend.text  = element_text(size = 17), legend.title = element_text(size = 17)
+  )
+
+#save
+ggsave(filename = paste0(figures.dir, "paired_locus_percentage.svg"), width = 15, height = 6)
+```
+
+
+
+
+```{r}
+sessionInfo()
+```
